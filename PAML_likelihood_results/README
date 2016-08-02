@@ -1,0 +1,2 @@
+These data are output using parse_codeml_branch_sites.py.
+There is a directory for each PAML test that was run labeled by the clade used for the foreground lineage.

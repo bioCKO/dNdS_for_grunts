@@ -1,0 +1,256 @@
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results")
+load("~/git_Repositories/metaTranscriptomes/working_directory/MBD-seq_Image.R")#
+source("~/git_Repositories/metaTranscriptomes/scripts/MBD-seq_analysis_functions.R")#
+lrt = function(la, lo, df){#
+  G = 2*(la - lo)#
+  # print(G)#
+  p.values = pchisq(G, df, ncp = 0, lower.tail = F)#
+  return(p.values)#
+}#
+#
+lrt(-4707.210163, -4710.222252, 1)#
+#
+#read in the data from the null and alternative models for the branch-site test fo
+null = read.table("nullLikelihoods_branchSites_CARB-MACRO.txt", header = T)#
+alt = read.table("altLikelihoods_branchSites_CARB-MACRO.txt", header = T)
+#these should show the contig, the number of parameters for the model, and it's log likelihood#
+head(null); head(alt)#
+#first run lrt between the models#
+contig = alt$contig#
+contigs.null = null$contig#
+la = alt$likelihood#
+lo = null$likelihood#
+p.values = lrt(la, lo, 1) #note degrees of freedom is difference in number of parameters between models (in this case always 1)#
+#
+#record the results of the test in a new dataframe#
+result = data.frame(la, lo, p.values, contig, contigs.null)#
+head(result)#
+#
+#merge the dataset with the contig-isogroup table#
+iso2seq = read.table('/Users/grovesdixon/lab_files/Amillepora_transcriptome/amillepora_transcriptome_july2014/amil_seq2iso.tab')#
+colnames(iso2seq) = c('contig', 'isogroup')#
+head(iso2seq)#
+dat = merge(result, iso2seq, by = 'contig')#
+head(dat)#
+#
+#get adjusted p values for multiple tests#
+dat$adj.p = p.adjust(dat$p.values, method = 'BH')#
+#
+#get an idea of how many genes are significant#
+cuts = c(0.05, 0.01, 0.001, 0.0001)#
+for (i in cuts){#
+	sub = dat[dat$adj.p < i,]#
+	unadjust = dat[dat$p.values < i,]#
+	print(paste(paste(i, nrow(sub)), nrow(unadjust)))#
+}#
+#write out data for input into standard GO enrichment
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/carb")
+#read in the data from the null and alternative models for the branch-site test for positive selection#
+#see PAML manual for descriptions of these models#
+null = read.table("nullLikelihoods_branchSites.txt", header = T)#
+alt = read.table("altLikelihoods_branchSites.txt", header = T)#
+#
+#these should show the contig, the number of parameters for the model, and it's log likelihood#
+head(null); head(alt)#
+#
+#set up lrt function that returns p values from two vectors of likelihoods#
+lrt = function(la, lo, df){#
+  G = 2*(la - lo)#
+  p.values = pchisq(G, df, ncp = 0, lower.tail = F)#
+}#
+#first run lrt between the models#
+contig = alt$contig#
+contigs.null = null$contig#
+la = alt$likelihood#
+lo = null$likelihood#
+p.values = lrt(la, lo, 1) #note degrees of freedom is difference in number of parameters between models (in this case always 1)#
+#
+#record the results of the test in a new dataframe#
+result = data.frame(la, lo, p.values, contig, contigs.null)#
+head(result)#
+#
+dat <- result#
+#
+#get adjusted p values for multiple tests#
+dat$adj.p = p.adjust(dat$p.values, method = 'BH')#
+#
+#get an idea of how many genes are significant#
+cuts = c(0.05, 0.01, 0.001, 0.0001)#
+for (i in cuts){#
+	sub = dat[dat$adj.p < i,]#
+	unadjust = dat[dat$p.values < i,]#
+	print(paste(paste(i, nrow(sub)), nrow(unadjust)))#
+}#
+#write our the results#
+write.table(dat, "branch_sites_LRT_results.txt", quote = F, row.names = F, sep = "\t")#
+sig = dat[dat$adj.p < 0.0001,]#
+write.table(dat[,4], "branch_sites_LRT_SIGNIFICANT_results.txt", quote = F, row.names = F, sep = "\t")#
+#
+#export the data for GO and KOGG enrichment tests using MWU-tests#
+#MISHA'S SCRIPTS USE ISOGROUP100 INSTEAD OF ISOGROUP=100, SO CHANGE THAT HERE#
+contig = dat$contig#
+out = data.frame(contig, -log(dat$p.values, 10))#
+colnames(out) = c('gene', 'logp')#
+head(out)#
+nrow(out)#
+#write out for GO#
+#use this file as input for #
+write.table(out, 'branch_site_LRT_results_for_GOmwu.csv', quote = F, row.names = F, sep = ",")
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/flav")
+#read in the data from the null and alternative models for the branch-site test for positive selection#
+#see PAML manual for descriptions of these models#
+null = read.table("nullLikelihoods_branchSites.txt", header = T)#
+alt = read.table("altLikelihoods_branchSites.txt", header = T)#
+#
+#these should show the contig, the number of parameters for the model, and it's log likelihood#
+head(null); head(alt)#
+#
+#set up lrt function that returns p values from two vectors of likelihoods#
+lrt = function(la, lo, df){#
+  G = 2*(la - lo)#
+  p.values = pchisq(G, df, ncp = 0, lower.tail = F)#
+}#
+#first run lrt between the models#
+contig = alt$contig#
+contigs.null = null$contig#
+la = alt$likelihood#
+lo = null$likelihood#
+p.values = lrt(la, lo, 1) #note degrees of freedom is difference in number of parameters between models (in this case always 1)#
+#
+#record the results of the test in a new dataframe#
+result = data.frame(la, lo, p.values, contig, contigs.null)#
+head(result)#
+#
+dat <- result#
+#
+#get adjusted p values for multiple tests#
+dat$adj.p = p.adjust(dat$p.values, method = 'BH')#
+#
+#get an idea of how many genes are significant#
+cuts = c(0.05, 0.01, 0.001, 0.0001)#
+for (i in cuts){#
+	sub = dat[dat$adj.p < i,]#
+	unadjust = dat[dat$p.values < i,]#
+	print(paste(paste(i, nrow(sub)), nrow(unadjust)))#
+}#
+#write our the results#
+write.table(dat, "branch_sites_LRT_results.txt", quote = F, row.names = F, sep = "\t")#
+sig = dat[dat$adj.p < 0.0001,]#
+write.table(dat[,4], "branch_sites_LRT_SIGNIFICANT_results.txt", quote = F, row.names = F, sep = "\t")#
+#
+#export the data for GO and KOGG enrichment tests using MWU-tests#
+#MISHA'S SCRIPTS USE ISOGROUP100 INSTEAD OF ISOGROUP=100, SO CHANGE THAT HERE#
+contig = dat$contig#
+out = data.frame(contig, -log(dat$p.values, 10))#
+colnames(out) = c('gene', 'logp')#
+head(out)#
+nrow(out)#
+#write out for GO#
+#use this file as input for #
+write.table(out, 'branch_site_LRT_results_for_GOmwu.csv', quote = F, row.names = F, sep = ",")
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/flav")
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/macro")
+#read in the data from the null and alternative models for the branch-site test for positive selection#
+#see PAML manual for descriptions of these models#
+null = read.table("nullLikelihoods_branchSites.txt", header = T)#
+alt = read.table("altLikelihoods_branchSites.txt", header = T)#
+#
+#these should show the contig, the number of parameters for the model, and it's log likelihood#
+head(null); head(alt)#
+#
+#set up lrt function that returns p values from two vectors of likelihoods#
+lrt = function(la, lo, df){#
+  G = 2*(la - lo)#
+  p.values = pchisq(G, df, ncp = 0, lower.tail = F)#
+}#
+#first run lrt between the models#
+contig = alt$contig#
+contigs.null = null$contig#
+la = alt$likelihood#
+lo = null$likelihood#
+p.values = lrt(la, lo, 1) #note degrees of freedom is difference in number of parameters between models (in this case always 1)#
+#
+#record the results of the test in a new dataframe#
+result = data.frame(la, lo, p.values, contig, contigs.null)#
+head(result)#
+#
+dat <- result#
+#
+#get adjusted p values for multiple tests#
+dat$adj.p = p.adjust(dat$p.values, method = 'BH')#
+#
+#get an idea of how many genes are significant#
+cuts = c(0.05, 0.01, 0.001, 0.0001)#
+for (i in cuts){#
+	sub = dat[dat$adj.p < i,]#
+	unadjust = dat[dat$p.values < i,]#
+	print(paste(paste(i, nrow(sub)), nrow(unadjust)))#
+}#
+#write our the results#
+write.table(dat, "branch_sites_LRT_results.txt", quote = F, row.names = F, sep = "\t")#
+sig = dat[dat$adj.p < 0.0001,]#
+write.table(dat[,4], "branch_sites_LRT_SIGNIFICANT_results.txt", quote = F, row.names = F, sep = "\t")#
+#
+#export the data for GO and KOGG enrichment tests using MWU-tests#
+#MISHA'S SCRIPTS USE ISOGROUP100 INSTEAD OF ISOGROUP=100, SO CHANGE THAT HERE#
+contig = dat$contig#
+out = data.frame(contig, -log(dat$p.values, 10))#
+colnames(out) = c('gene', 'logp')#
+head(out)#
+nrow(out)#
+#write out for GO#
+#use this file as input for #
+write.table(out, 'branch_site_LRT_results_for_GOmwu.csv', quote = F, row.names = F, sep = ",")
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/macro-carb")
+setwd("/Users/grovesdixon/lab_files/coding4people/moises/likelihood_results/carb-macro")
+#read in the data from the null and alternative models for the branch-site test for positive selection#
+#see PAML manual for descriptions of these models#
+null = read.table("nullLikelihoods_branchSites.txt", header = T)#
+alt = read.table("altLikelihoods_branchSites.txt", header = T)#
+#
+#these should show the contig, the number of parameters for the model, and it's log likelihood#
+head(null); head(alt)#
+#
+#set up lrt function that returns p values from two vectors of likelihoods#
+lrt = function(la, lo, df){#
+  G = 2*(la - lo)#
+  p.values = pchisq(G, df, ncp = 0, lower.tail = F)#
+}#
+#first run lrt between the models#
+contig = alt$contig#
+contigs.null = null$contig#
+la = alt$likelihood#
+lo = null$likelihood#
+p.values = lrt(la, lo, 1) #note degrees of freedom is difference in number of parameters between models (in this case always 1)#
+#
+#record the results of the test in a new dataframe#
+result = data.frame(la, lo, p.values, contig, contigs.null)#
+head(result)#
+#
+dat <- result#
+#
+#get adjusted p values for multiple tests#
+dat$adj.p = p.adjust(dat$p.values, method = 'BH')#
+#
+#get an idea of how many genes are significant#
+cuts = c(0.05, 0.01, 0.001, 0.0001)#
+for (i in cuts){#
+	sub = dat[dat$adj.p < i,]#
+	unadjust = dat[dat$p.values < i,]#
+	print(paste(paste(i, nrow(sub)), nrow(unadjust)))#
+}#
+#write our the results#
+write.table(dat, "branch_sites_LRT_results.txt", quote = F, row.names = F, sep = "\t")#
+sig = dat[dat$adj.p < 0.0001,]#
+write.table(dat[,4], "branch_sites_LRT_SIGNIFICANT_results.txt", quote = F, row.names = F, sep = "\t")#
+#
+#export the data for GO and KOGG enrichment tests using MWU-tests#
+#MISHA'S SCRIPTS USE ISOGROUP100 INSTEAD OF ISOGROUP=100, SO CHANGE THAT HERE#
+contig = dat$contig#
+out = data.frame(contig, -log(dat$p.values, 10))#
+colnames(out) = c('gene', 'logp')#
+head(out)#
+nrow(out)#
+#write out for GO#
+#use this file as input for #
+write.table(out, 'branch_site_LRT_results_for_GOmwu.csv', quote = F, row.names = F, sep = ",")

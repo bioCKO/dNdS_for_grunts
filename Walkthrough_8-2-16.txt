@@ -1,0 +1,482 @@
+#WALKTHROUGH FOR ortholog calling and dN/dS analyses
+#last updated 8-2-16
+#updates begin as 
+
+
+
+#run the reciprocal blasts
+paired_blasts_launcher.py *PRO.fas > doblasts
+GDlauncher_creator.py -n doblasts -j doblasts -l doblasts.job -q normal -t 10:00:00 -c 12 -a tagmap -e grovesdixon@gmail.com
+qsub doblasts.job
+
+
+#PULL THE TOP HITS FOR EACH BLAST RESULTS FILE
+COV="50"
+PCTID="75"
+>getBestHits;for file in *.br; do query=${file/-*_PRO.fas.br/}; db=${file/*-/}; echo "find_best_hits.py -br $file -query $query -db ${db/.br/} -o $query-${db/.br/}.hits -cov $COV -pctID $PCTID" >> getBestHits; done
+GDlauncher_creator.py -n getBestHits -j getBestHits -l getBestHits.job
+qsub getBestHits.job
+
+#CONCATENATE THE TOP HITS FILES 
+>all_top_hits.txt; for file in *.hits; do cat $file >> all_top_hits.txt; done
+
+
+#GET THE RECIPROCAL ORTHOLOGS
+echo "get_multireciprocal_orthos2.py -hits all_top_hits.txt -fa *PRO.fas -o reciprocalOrthos_cov50_pctID75.txt -anchor carb_PRO.fas" > getRecips
+GDlauncher_creator.py -n getRecips -j getRecips -l getRecips.job
+qsub getRecips.job
+
+#GET ORTHOLOG STATS AND OUTPUT REDUCED ORTHOLOGS BASED ON REPRESENTATION
+orthologStats.py reciprocalOrthos_cov50_pctID75.txt 1
+
+#FIRST OUTPUT FASTA FILES FOR EACH GENE IN THE ORHTOLOG TABLE BY PULLING THE SEQUENCES FROM THEIR PROTEIN FASTA FILES
+echo "output_ortholog_seqs.py -prot *PRO.fas -nucl *CDS.fas -orthos reciprocalOrthos_cov50_pctID75_rep1.0.txt" > orthoOuter
+launcher_creator.py -j orthoOuter -n orthoOuter -q development -a $allo -e $email -t 1:00:00
+qsub orthoOuter.job
+
+#USE MAFFT TO MAKE MULTIPLE ALIGNMENTS OF THE ORTHOLOG PROTEIN SEQUENCES
+#NOTE THAT THIS DOESN'T RUN WHEN YOU DO IT THROUGH A JOB. I GOT IT TO WORK BY RUNNING ON FRONT NODES.
+>align;for fa in $(ls *prot.fasta); do echo "mafft --localpair  --maxiterate 1000 $fa > ${fa/.fasta/}.aln" >> align; done
+launcher_creator.py -n align -j align -t 3:00:00 -q normal -a $allo -N 12
+sbatch align.slurm
+
+
+
+#WE NEED TO THESE BE HIGH QUALITY ALIGNMENTS OF REAL ORHTOLOGS. SO THESE ARE WORTH LOOKING AT MANUALLY. 
+>alignments.txt; for file in $(ls *.aln); do echo $file >> alignments.txt; echo ${file/.aln/} >> alignments.txt; cat $file >> alignments.txt; done &
+
+
+##USE PAL2NAL TO REVERSE TRANSLATE THE PROTEIN ALIGNMENTS BACK INTO CODONS BASED ON THE CDS FILES
+>reverseTranslate;for aln in $(ls *.aln); do echo "pal2nal.pl $aln ${aln/prot.aln/}nuc.fasta -output paml -nogap > ${aln/_prot.aln/}.codon" >> reverseTranslate; done
+launcher_creator.py -n reverseTranslate -j reverseTranslate -t 1:00:00 -a $allo -N 1
+sbatch reverseTranslate.slurm
+
+
+#BUILD A SPECIES LIST FOR EASY ACCESS TO THE SPECIES NAMES
+#note this works by calling on the original transcriptome files, so if you have them elsewhere it won't work.
+>speciesList.txt; for i in $(ls *CDS.fas); do echo ${i/_CDS.fas/} >> speciesList.txt; done
+
+#ENTER A PHYLOGENETIC TREE TO FEED TO PAML
+#Here the tree does not need to have node labels or terminal branch labels (see Tree_file_notes.txt)
+#The tree is actually irrelevant here, I just kept it so this would be consistent with the next steps
+TREE="tree.txt"
+
+#PASTE A TREE INTO THE TREE FILE
+nano $TREE
+#PASTE IN THE TREE (it doesn't really matter here)
+(macro,flav,carb);
+
+#IF YOU DIDN'T GRAB THE SPECIES LIST FROM BEFORE, COPY IT OVER INTO YOUR WORKING DIRECTORY
+
+##------------- RUNNING PAIRWISE COMPARISONS FOR dNdS ---------------------------
+
+##BUILD A PAML CONTROL FILE FOR EACH GENE
+>buildControls;for file in $(ls *.codon); do echo "build_paml_control.py -i $file -t $TREE -spp speciesList.txt -runMode -2" >> buildControls; done
+launcher_creator.py -n buildControls -j buildControls -a $allo -e $email -t 3:00:00 -q normal
+sbatch buildControls.slurm
+
+
+#RUN CODEML
+>runFishCodeml; for file in $(ls *.cnt); do echo "codeml $file" >> runFishCodeml; done &
+launcher_creator.py -n runFishCodeml -j runFishCodeml -q normal -t 10:00:00 -a $allo -e $email
+qsub runFishCodeml.job
+
+
+#IF THE ORTHOLOG TABLE HAS PIPES IN THE CONTIG NAMES REMOVE THEM
+sed -i.bak "s/|/-/g" reciprocalOrthos_cov50_pctID75_rep1.0.txt 
+
+##NOW PARSE THE CODEML OUTPUTS
+>parse
+for file in $(ls *_CDS.fas); do echo "parse_codeml_pairwise_output.py -f *.codeml -spp1 ${file/_CDS.fas/} -sppList speciesList.txt -o pair-wise_dNdS_${file/_CDS.fas/}.txt" >> parse; done
+launcher_creator.py -n parse -j parse -c 12
+qsub parse.slurm
+
+#-------------------------------------------------------------------------------------------------------
+#--------- FILTERING ORTHOLOGS BASED ON PAIRWISE COMPARISONS AND FAST ORTHO (new 7-19-16)---------------
+#-------------------------------------------------------------------------------------------------------
+#now that we have pair-wise dN and dS estimates we can use them to clean out false positives from the dataset
+#we used H. carbonarium as the anchor, so those sequences are our base orthologs
+#we assume that the majority of called orthologs are real, and that false ones will represent 
+#a distinct cluster of dS values.
+#send the pair-wise_dNdS_Amillepora.txt file to Mac and output filtered ortholog sets using filter_orthologs.R
+#Use the set of filtered orhtologs for all downstream analyses
+#now return to where you have the CDS and PRO files and and re-output the ortholog
+#once you have the new set of orthologs, re-align and re-reverse translate them for a new set of .codon files
+#then use those for the downstream paml analyses
+
+##NOW FILTER THESE ORTHOLOGS USING filter_orthologs.R
+#you need to scp this to the Mac to run it
+
+#now we need to run fastOrtho
+###################################
+########## RUN FASTORTHO ##########
+###################################
+
+### PREPARE OPTIONS FILE
+#fastOrtho can take a lot of options, so its
+#easiest to set this up and feed it into the command
+#you can make a working options file in two ways,
+#you can edit the template options file manually and use that
+#or set the necessary variables in bash then build one with build_options.sh
+
+
+### BUILDING OPTIONS FILE WITH build_options.sh
+#make a working directory for this run and change to it
+mkdir run1
+cd run1
+
+#set up the variables needed to build an options file
+module load blast                                  #load module for blast
+export BLASTP=$(which blastp)                      #path to blastp
+export MAKEBLASTDB=$(which makeblastdb)            #path to makeblastdb
+export MCL="$WORK/mcl/bin/mcl"                     #path to MCL executable
+export FASTORTHO="$WORK/FastOrtho/src/FastOrtho"   #path to FastOrtho executable
+export FAAS="$WORK/Moises/data_files/protein_files_for_fastOrtho"                 #path to where your .faa files are stored (don't include final /)
+export EVALUE="1e-10"                              #the evalue cutoff you want to use
+export NAME="run1"                                 #name for this FastOrtho run
+export OPTIONS="option_file.txt"                   #desired name for options file
+#export BLASTRES="$(pwd)/compiled_blast_output.out"
+
+
+#build options file
+build_options.sh $NAME $OPTIONS
+
+#run FastOrtho
+echo "$FASTORTHO --option_file $OPTIONS" > runFastOrtho
+launcher_creator.py -n runFastOrtho -j runFastOrtho -q normal -t 48:00:00 -a $allo -e $email
+sbatch runFastOrtho.slurm
+
+#final output for this example will be run1.end
+##############################################################
+
+
+#output is a file called reciprocalOrthos_dS_pass_wide.txt
+
+#use this to output a fresh set of orthologs that are dS filtered
+
+#for bonus filtering, get consensus orthologs between this set
+#and one generated using FastOrtho (see fastOrtho_TACC_WALKTHROUGH.txt)
+
+cross_check_orthos_fish.py -orthos dS_filtered_orthologs.tsv -fOrthos run1.end -o fastOrthoFilteredOrthos.tsv
+
+
+#now you have a set of filtered orthologs
+
+#output the ortholog sequences similar to above, but use the script output_ortholog_seqsV2.py
+
+output_ortholog_seqsV2.py -prot *PRO.fas -nucl *CDS.fas -orthos fastOrthoFilteredOrthos.tsv
+
+#now repeat the alignment, reverse translation and PAML things with the new set of seqs
+
+
+
+
+#----------------------------------------------------------------------------------------
+
+#-----------------------  RUN THE CODEML SITES MODELS ---------------------------------
+#as in Jeffares et al 2015 'A Beginners Guide to Estimating the Non-synonymous to synonymous rate rato of all protein-coding genes in a genome"
+
+#sites models assume one omega (dNdS) for all lineages
+#here we will run Codeml for two pairs of null and alternative models
+#First pair is M1a and M2a
+#Model M1a is specified using NSsites = 1, model = 0
+#Model M2a is specified using NSsites = 2, model = 0
+#the M1a model assumes one omega value for all lineages and that omega can only fall into two classes: 1. between 0 and 1, 2. equal to 1
+#the M2a model assumes one omega value for all lineages but allows for three classes: 1. between 0 and 1, 2. equal to 1, 3. omega greater than 1
+#if model M2a provides better fit for the data, it suggests positive selection for this gene.
+#as in Jeffares et al 2015 'A Beginners Guide to Estimating the Non-synonymous to synonymous rate rato of all protein-coding genes in a genome"
+#Second pair is M7 and M8
+#Model M7 is specified using NSsites = 7, model = 0
+#Model M8 is specified using NSsites = 8, model = 0
+#the M7 model assumes one omega for all lineages and that omega can be in 10 classes between 0 and 1 
+#the M8 model assumes one omega for all lineages and that omega can be in 10 classes between 0 and 1, or in an eleventh class greater than 1
+#like with M1a and M2a, if M8 provides better fit to the data it suggests positive selection.
+
+#conveniently, we do not have to create one control file for each model
+#we can run them together by specifying all the necessary values for NSsites (note that this is the only parameter that varies between the models.
+#build the control file to run Codeml for the sites models M1a, M2a, M7 and M8
+build_paml_control.py -i TR10006-c0_g1_i1.codon -t TREE.txt -spp speciesList.txt -NSsites '0 1 2 7 8' -model 0 -runMode 0 -controlName TR10006-c0_g1_i1_sites_models.cnt -o TR10006-c0_g1_i1_sites_models.codeml
+GDlauncher_creator.py -n build_site_model_controls -j build_site_model_controls -l build_site_model_controls.job
+qsub build_site_model_controls.job
+
+
+#now we have control files for each gene
+#run codeml using each control file like this
+>run_sites_models; for file in $(ls *sites_models.cnt); do echo "codeml $file" >> run_sites_models; done
+GDlauncher_creator.py -n run_sites_models -j run_sites_models -l run_sites_models.job -q normal -t 6:00:00 -c 36
+qsub run_sites_models.job
+
+
+#extract the likelihoods
+>sites_models_raw_results; for file in $(ls *sites_models.codeml); do grep lnL $file | sed "s/^lnL.*[:space:]/${file/_sites_models.codeml/}\t&\t/" >> sites_models_raw_results; done
+
+#this will produce a file that looks like this:
+	TR10006-c0_g1_i1	lnL(ntime:  3  np:  5):	   -334.125176      +0.000000
+	TR10006-c0_g1_i1	lnL(ntime:  3  np:  6):	   -334.125413      +0.000000
+	TR10006-c0_g1_i1	lnL(ntime:  3  np:  8):	   -334.125412      +0.000000
+	TR10006-c0_g1_i1	lnL(ntime:  3  np:  6):	   -334.125344      +0.000000
+	TR10006-c0_g1_i1	lnL(ntime:  3  np:  8):	   -334.125345      +0.000000
+	TR10033-c0_g2_i2	lnL(ntime:  3  np:  5):	   -331.822553      +0.000000
+	TR10033-c0_g2_i2	lnL(ntime:  3  np:  6):	   -331.822700      +0.000000
+	TR10033-c0_g2_i2	lnL(ntime:  3  np:  8):	   -331.822714      +0.000000
+	TR10033-c0_g2_i2	lnL(ntime:  3  np:  6):	   -331.822664      +0.000000
+	TR10033-c0_g2_i2	lnL(ntime:  3  np:  8):	   -331.822682      +0.000000
+	TR1003-c0_g1_i2	lnL(ntime:  3  np:  5):	   -313.910267      +0.000000
+	TR1003-c0_g1_i2	lnL(ntime:  3  np:  6):	   -313.885512      +0.000000
+	TR1003-c0_g1_i2	lnL(ntime:  3  np:  8):	   -313.777036      +0.000000
+	TR1003-c0_g1_i2	lnL(ntime:  3  np:  6):	   -313.887335      +0.000000
+	TR1003-c0_g1_i2	lnL(ntime:  3  np:  8):	   -313.777036      +0.000000
+
+#with five likelihoods entered for each gene. These represent the likelihoods for the five sites models we ran.
+#np gives the number of parameters for that model
+#the next step is to compare them in series
+
+#parse these raw data into a table for input into R
+parse_sites_model_likelihoods.py -i sites_models_raw_results -o sites_models_results_Rinput.txt
+
+#Use R script LRT_for_sites_models.R to analyze the data
+#STATISTICAL SIGNIFICANCE
+#for both pairs of null and alternative models use a likelihood ratio test
+#using the likelihoods provided for each model calculate the G statistic =  2(lnL1 - lnL0)
+#This is also called the LRT statistic
+#For these models it is considered conservative to use the chi square distribution to get a p value from the G stastic
+
+
+
+
+#---------- BRANCH SITES MODEL ---------------
+#OVERVIEW:
+#Here we are running the "Branch-site test for positive selection" (PAML manual)
+#We run the alternative model A and the Null model A
+#Likelihood ratio tests between the two models may identify genes under positive selection in our specified lineage
+#Use one degree of freedom for likelihood ratio test (PAML manual)
+#control file settings for the alternative and null model are shown below:
+#ALTERNATIVE:
+	#model     = 2
+	#NSsites   = 2
+	#fix_omega = 0
+#NULL
+	#model     = 2
+	#NSsites   = 2
+	#fix_omega = 1
+	#omega     = 1
+
+#each of the two models allows W to vary between sites and between branches.
+#Which branches (lineages) can have their own W values is assigned in the tree file
+
+#copy the *.codon files into another directory
+
+#set up phylogenetic tree
+TREE="tree.txt"
+nano $TREE
+#PASTE IN THE UNROOTED TREE
+(flav,marcro,carb);
+
+
+#rooted tree for reference
+(flav,(macro, carb)); ##this is the rooted tree, don't use this
+
+#To build control files that are specific to a given lineage 
+#we need to tell the builder script which taxa are from that lineage
+#so make a subset of the species list for the macro flav clade
+
+nano clade.txt
+#paste in the one or two species you want to include
+carb
+macro
+
+
+#build the control files for the branch-sites null model
+>buildControlsNull;for file in $(ls *.codon); do echo "build_paml_control_fish.py -inc yes -i $file -t tree.txt -spp speciesList.txt -runMode 0 -model 2 -NSsites 2 -fix_omega 1 -omega 1 -controlName ${file/.codon/_NULL.cnt} -clade clade.txt -o ${file/.codon/_NULL.codeml}" >> buildControlsNull; done &
+launcher_creator.py -n buildControlsNull -j buildControlsNull -t 3:00:00 -a $allo -e $email -N 1 -q normal
+sbatch buildControlsNull.slurm
+
+
+#build paml control files for the branch-sites alternate model
+#note the tree files will overwrite, but that's ok
+>buildControlsALT;for file in $(ls *.codon); do echo "build_paml_control_fish.py -inc yes -i $file -t tree.txt -spp speciesList.txt -runMode 0 -model 2 -NSsites 2 -fix_omega 0 -controlName ${file/.codon/_ALT.cnt} -clade clade.txt -o ${file/.codon/_ALT.codeml}" >> buildControlsALT; done &
+launcher_creator.py -n buildControlsALT -j buildControlsALT -t 3:00:00 -a $allo -e $email -N 1 -q normal
+sbatch buildControlsALT.slurm
+
+
+#RUN THE NULL MODEL
+> runNullModel; for file in $(ls *NULL.cnt); do echo codeml $file >> runNullModel; done &
+launcher_creator.py -n runNullModel -j runNullModel -q normal -t 10:00:00 -a $allo -e $email -N 2
+sbatch runNullModel.slurm
+
+> runAltModel; for file in $(ls *ALT.cnt); do echo codeml $file >> runAltModel; done &
+launcher_creator.py -n runAltModel -j runAltModel -q normal -t 10:00:00 -a $allo -e $email -N 2
+sbatch runAltModel.slurm
+
+
+#ASSEMBLE LIKELIHOODS FOR NULL MODELS
+>nullResults;for file in $(ls *NULL.codeml); do dat=$(grep lnL $file); echo "${file/_NULL.codeml/}   $dat" >> nullResults;  done &
+
+#ASSEMBLE LIKELIHOODS FOR NULL MODELS
+>altResults;for file in $(ls *ALT.codeml); do dat=$(grep lnL $file); echo "${file/_ALT.codeml/}   $dat" >> altResults;  done &
+
+#PARSE THE DATA INTO TABLES
+parse_codeml_branch_sites.py -i nullResults -o nullLikelihoods_branchSites.txt
+parse_codeml_branch_sites.py -i altResults -o altLikelihoods_branchSites.txt
+
+
+#ANALYZE USING LRT_for_branch_sites_models.R
+
+#this can export a set of significant genes
+#to look at the alignments, send this list back to where you have the *.codon files
+>alignments.txt
+for i in `cat branch_sites_LRT_SIGNIFICANT_results.txt`; do echo -e "\n\n$i" >> alignments.txt; cat $i.codon >> alignments.txt; done
+#then check the alignments manually
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#------------- OLD VERSION ------------
+#NOW DO RECIPROCAL BLASTS FOR EACH PROTEIN SET WITH A.DIGITIFERA
+#here each 'PRO.fas' file will be used as the query once with and 'ANCHOR' file and once as the database
+ANCHOR=carb_PRO.fas
+>blastps
+for file in $(ls *PRO.fas); do 
+echo "blastp -query $file -db $ANCHOR -evalue 1e-5 -num_threads 12 -num_alignments 1 -outfmt 5 -out ${file/_PRO.fas/}_2_${ANCHOR/_PRO.fas/}.br" >> blastps;
+echo "blastp -query $ANCHOR -db $file -evalue 1e-5 -num_threads 12 -num_alignments 1 -outfmt 5 -out ${ANCHOR/_PRO.fas/}_2_${file/_PRO.fas/}.br" >> blastps;
+done
+
+
+#NOW POOL ALL THE ORTHOLOGS INTO A TABLE WHILE APPLYING FILTERS FOR EVALUE AND HIT PERCENTAGE
+
+E="1e-10"    #set the evalue cutoff
+C="75"       #set the coverage cutoff (percentage of total sequence length the alignment must cover.
+PI="85"      #percent identity cutoff (percentage of identical positions divided by alignment length)
+>getOrthos; for file in $(ls *PRO.fas); do  echo "get_reciprocal_orthos.py -br1 ${ANCHOR/_PRO.fas}_2_${file/_PRO.fas/}.br -br2 ${file/_PRO.fas/}_2_${ANCHOR/_PRO.fas}.br -fa2 $file -fa1 $ANCHOR -o ./${ANCHOR/_PRO.fas}_${file/_PRO.fas/}_orthos.txt -e $E -cov $C -pctID $PI > ${file/_PRO.fas/}_orthoCalls.log"; done
+nano getOrthos
+#paste results
+GDlauncher_creator.py -n getOrthos -j getOrthos -l getOrthos.job
+qsub getOrthos.job
+
+
+#MERGE THE ORTHOLOG DATA INTO A SINGLE TABLE
+orthotable="orthologs_e10c75pi80.txt"
+mergeReciprocalOrthos.py -f *orthos.txt -c .6 -o $orthotable -r carb > mergeOrthos_threeway_e10c75pi85.log
+cat mergeOrthos_threeway_e10c75pi85.log
+#note here the argument -c allows you to filter on the proportion of species with sequences for each ortholog (row) in the table
+
+
+#START A NEW DIRECTORY TO DO ALIGNMENTS AND RUN PAML IN
+mkdir paml
+
+#COPY THE PRO.fas and CDS.fas FILES AND THE ORTHOLOG TABLE TO THE NEW DIRECTORY
+#YOU CAN MAKE MULTIPLE DIRECTORIES TO RUN DIFFERENT ORTHOLOG STRINGENCIES IN
+
+#OUTPUT THE PROTEIN SEQUENCES FOR EACH ORTHOLOG 
+#your directory will get a bit messy here
+echo output_ortholog_seqs.py -prot *PRO.fas -nucl *CDS.fas -orthos $orthotable -as_base carb > orthoOuter
+GDlauncher_creator.py -j orthoOuter -n orthoOuter -l orthoOuter.job -q development -c 12
+qsub orthoOuter.job
+
+
+#CHECK THAT ALL THE SEQUENCES WERE OUTPUT
+ll *prot.fasta | wc -l
+#the number should match the number of orthologs added to the table during the merging step (see mergeOrthos.log)
+
+#USE MAFFT TO MAKE ALIGNMENTS
+#NOTE THAT THIS DOESN'T RUN WHEN I SUBMIT A JOB. I always run it on the front nodes and haven't gotten in trouble yet.
+module load mafft
+for fa in $(ls *prot.fasta); do mafft --localpair  --maxiterate 1000 $fa > ${fa/.fasta/}.aln; done
+
+#CHECK YOU GOT ALL YOUR .aln FILES
+ll *.aln | wc -l
+
+#REVERSE TRANSLATE THE AMINO ACID SEQUENCES USING PAL2NAL
+>reverseTrans; for aln in $(ls *.aln); do echo "pal2nal.pl $aln ${aln/prot.aln/}nuc.fasta -output paml -nogap > ${aln/_prot.aln/}.codon" >> reverseTrans; done
+GDlauncher_creator.py -n reverseTrans -l reverseTrans.job -j reverseTrans
+qsub reverseTrans.job
+
+#CHECK YOU GOT ALL YOUR FILES
+ll *.codon | wc -l
+
+
+##MAKE A SPECIES LIST WITH EACH SPECIES
+nano
+carb
+flav
+macro
+#save as speciesList.txt
+
+##BUILD A PAML CONTROL FILE FOR EACH GENE
+>buildControls;for file in $(ls *.codon); do echo "build_paml_control.py -i $file -t $TREE -spp speciesList.txt -runMode -2" >> buildControls; done
+GDlauncher_creator.py -n buildControls -j buildControls -l buildControls.job -c 12
+qsub buildControls.job
+
+
+#RUN CODEML
+>runCodeml; for file in $(ls *.cnt); do echo "codeml $file" >> runCodeml; done
+GDlauncher_creator.py -n runCodeml -j runCodeml -l runCodeml.job -c 12 -q normal -t 10:00:00
+qsub runCodeml.job
+
+
+##NOW PARSE THE CODEML OUTPUTS
+>parse
+for file in $(ls *_CDS.fas); do echo "parse_codeml_pairwise_output.py -f *.codeml -spp1 ${file/_CDS.fas/} -sppList speciesList.txt -o pair-wise_dNdS_${file/_CDS.fas/}.txt" >> parse; done
+GDlauncher_creator.py -n parse -j parse -l parse.job -c 12
+qsub parse.job
+
+#OUTPUTS ARE pair-wise_dNdS_*.txt
+
+
+
+
+
+
+#---------------------------------------------------------------------------------
+
+
+
+#GET RID OF THE PIPES IN THE SEQUENCE NAMES
+for file in $(ls *PRO.fas); do sed -i.bak "s/|/-/" $file; done
+
+#RUN MULTIWAY BLAST
+multiblast_launcher.py -i *PRO.fas > doblast
+
+#WORKING ON THREE-WAY RECIPROCAL SCRIPT
+get_multireciprocal_orthos.py
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
